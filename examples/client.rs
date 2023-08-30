@@ -127,7 +127,7 @@ async fn main() {
     let port = args.get(2).unwrap().as_str();
     let addr = format!("{}:{}", ip, port);
 
-    let mut rdma = RdmaBuilder::default().connect(addr.clone()).await.unwrap();
+    let mut rdma = RdmaBuilder::default().set_dev("mlx5_0").set_imm_flag_in_wc(2).unwrap().connect(addr.clone()).await.unwrap();
     println!("connected");
     send_data_to_server(&rdma).await.unwrap();
     send_data_with_imm_to_server(&rdma).await.unwrap();

@@ -104,7 +104,7 @@ async fn main() {
     let port = args.get(2).unwrap().as_str();
     let addr = format!("{}:{}", ip, port);
 
-    let mut rdma = RdmaBuilder::default().listen(addr).await.unwrap();
+    let mut rdma = RdmaBuilder::default().set_dev("mlx5_0").set_imm_flag_in_wc(2).unwrap().listen(addr).await.unwrap();
     println!("accepted");
     receive_data_from_client(&rdma).await.unwrap();
     receive_data_with_imm_from_client(&rdma).await.unwrap();
