@@ -1,33 +1,69 @@
 use async_rdma::{
     LocalMr, RemoteMr,
-    LocalMrReadAccess, LocalMrWriteAccess, 
+    LocalMrReadAccess, LocalMrWriteAccess,
+    // RemoteMrReadAccess, RemoteMRWriteAccess,
     Rdma, RdmaBuilder};
 use clippy_utilities::Cast;
 use std::{alloc::Layout, env, io::{self, Write}, process::exit};
 use rand::Rng;
 
-async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>, req_num: usize, req_size: usize, iamserver: bool) -> io::Result<()>{
+async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
+    req_num: usize, req_size: usize, iamserver: bool) -> io::Result<()>{
 
     for i in 0..req_num {
         // Allocating local memory
-        let lmr = rdma.alloc_local_mr(Layout::array::<u8>(req_size).unwrap())?;
-        local_mrs.push(lmr);
+        let mut lmr = rdma.alloc_local_mr(Layout::array::<u8>(req_size).unwrap())?;
 
         // write data into lmr
         let fill = if iamserver { 1_u8 } else { 0_u8 };
-        let mut write_access = local_mrs[i].get_mut(0..req_size).unwrap();
-        let mut slice = write_access.as_mut_slice();
-        for byte in slice.iter_mut() {
+        for byte in lmr.get_mut(0..req_size).unwrap().as_mut_slice().iter_mut() {
             *byte = fill;
         }
 
-        // Print the first and last bytes
-        println!("First and last bytes are {:?} and {:?}, size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());      
+        if iamserver {
+            // server send local mrs to client
+            rdma.send_local_mr(lmr).await?;
+        } else {
+            // client saves local mrs
+            local_mrs.push(lmr);
+
+            // client receives and save remote mrs
+            let rmr = rdma.receive_remote_mr().await?;
+            remote_mrs.push(rmr);
+        }
     }
 
     Ok(())
 }
 
+async fn return_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
+    req_num: usize, iamserver: bool) -> io::Result<()>{
+
+    for i in 0..req_num {
+        if iamserver {
+            // server receives local mrs
+            let lmr = rdma.receive_local_mr().await?;
+            local_mrs.push(lmr);
+        } else {
+            let rmr = remote_mrs.remove(0);
+            // client sends remote mrs
+            rdma.send_remote_mr(rmr).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn print_mrs(rdma: &Rdma, local_mrs: &Vec<LocalMr>, req_num: usize) -> io::Result<()>{
+
+    for i in 0..req_num {
+        let slice = local_mrs[i].as_slice();
+        println!("Index {} First {:?} Last {:?} Size {}", i, slice.get(0), slice.get(slice.len() - 1), slice.len());
+    }
+
+    Ok(())
+
+}
 
 #[tokio::main]
 async fn main() {
@@ -89,7 +125,19 @@ async fn main() {
 
     let mut local_mrs = Vec::with_capacity(req_num);
     let mut remote_mrs = Vec::with_capacity(req_num);
+    // only the client has access to local_mrs and remote_mrs for now
     prepare_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, req_size, iamserver).await.unwrap();
+    println!("local_mrs num: {}", local_mrs.len());
+    println!("remote_mrs num: {}", remote_mrs.len());
+
+    // both client and server has acces to their local_mrs after this
+    return_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
+    println!("local_mrs num: {}", local_mrs.len());
+    println!("remote_mrs num: {}", remote_mrs.len());
+
+    print_mrs(&rdma, &local_mrs, req_num).await.unwrap();
+
+    
 
     // let mut rng = rand::thread_rng();
     // let mut operation_list: Vec<i32> = Vec::new();
