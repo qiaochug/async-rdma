@@ -4,7 +4,7 @@ use async_rdma::{
     // RemoteMrReadAccess, RemoteMRWriteAccess,
     Rdma, RdmaBuilder};
 use clippy_utilities::Cast;
-use std::{alloc::Layout, env, io::{self, Write}, process::exit};
+use std::{alloc::Layout, env, io::{self, Write}, process::exit, time::Instant};
 use rand::Rng;
 
 async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
@@ -130,12 +130,40 @@ async fn main() {
     println!("local_mrs num: {}", local_mrs.len());
     println!("remote_mrs num: {}", remote_mrs.len());
 
-    // both client and server has acces to their local_mrs after this
-    return_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
-    println!("local_mrs num: {}", local_mrs.len());
-    println!("remote_mrs num: {}", remote_mrs.len());
+    
+    // let mut join_handles = Vec::with_capacity(req_num);
+    // let start_time;
+    if !iamserver {
+        let mut lmr1 = local_mrs.remove(0);
+        let mut lmr2 = local_mrs.remove(0);
+        let rmr1 = remote_mrs.remove(0);
+        let rmr2 = remote_mrs.remove(0);
+        // let jh1 = rdma.read(&mut lmr1, &rmr1);
+        // join_handles.push(jh);
+        // let jh2 = rdma.read(&mut lmr2, &rmr2);
+        // join_handles.push(jh);
 
-    print_mrs(&rdma, &local_mrs, req_num).await.unwrap();
+        let start_time = Instant::now();
+        rdma.read(&mut lmr1, &rmr1).await;
+        rdma.read(&mut lmr2, &rmr2).await;
+        // jh1.await;
+        // jh2.await;
+        let end_time = Instant::now();
+        let elapsed_time = end_time - start_time;
+
+        let elapsed_nanoseconds = elapsed_time.as_nanos();
+        println!("Elapsed time: {} nanoseconds", elapsed_nanoseconds);
+        println!("Average Elapsed time: {} nanoseconds", elapsed_nanoseconds as f64/2.0);
+    }
+
+    
+
+    // // both client and server has acces to their local_mrs after this
+    // return_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
+    // println!("local_mrs num: {}", local_mrs.len());
+    // println!("remote_mrs num: {}", remote_mrs.len());
+
+    // print_mrs(&rdma, &local_mrs, req_num).await.unwrap();
 
     
 
