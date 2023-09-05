@@ -1,3 +1,4 @@
+// #![feature(get_mut_unchecked)]
 use async_rdma::{
     LocalMr, RemoteMr,
     LocalMrReadAccess, LocalMrWriteAccess,
@@ -7,8 +8,10 @@ use clippy_utilities::Cast;
 use std::{alloc::Layout, 
     env, io::{self, Write}, 
     process::exit, time::Instant,
-    sync::Arc};
+    sync::{Arc},
+    ops::DerefMut};
 use rand::Rng;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
     req_num: usize, req_size: usize, iamserver: bool) -> io::Result<()>{
@@ -149,15 +152,11 @@ async fn main() {
     // let start_time;
     if !iamserver {
         let mut lmr1_i = local_mrs.remove(0);
-        let mut lmr1 = Arc::new(lmr1_i);
+        let mut lmr1 = Arc::new(RwLock::new(lmr1_i));
         let mut lmr2_i = local_mrs.remove(0);
-        let mut lmr2 = Arc::new(lmr2_i);
+        let mut lmr2 = Arc::new(RwLock::new(lmr2_i));
         let rmr1_o = Arc::new(remote_mrs.remove(0));
         let rmr2_o = Arc::new(remote_mrs.remove(0));
-        // let slice = lmr1.as_slice();
-        // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-        // let slice = lmr2.as_slice();
-        // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
 
         // let mut lmr1 = Arc::clone(&lmr1_o);
         // let mut lmr2 = Arc::clone(&lmr2_o);
@@ -169,14 +168,22 @@ async fn main() {
         let rdma2 = Arc::clone(&rdma_arc);
 
         let jh1 = tokio::spawn(async move {
-            rdma1.read(Arc::get_mut(&mut lmr1).unwrap(), rmr1.as_ref()).await;
-            let slice = lmr1.as_slice();
-            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            // let lmr_w = lmr1.write().unwrap();
+            // let lmr = binding.deref_mut();
+            rdma1.read(lmr1.write().deref_mut(), rmr1.as_ref()).await;
+            // let lmr_r = lmr1.read().unwrap();
+            // let slice = lmr_r.as_slice();
+            // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            // drop(slice);
         });
         let jh2 = tokio::spawn(async move {
-            rdma2.read(Arc::get_mut(&mut lmr2).unwrap(), rmr2.as_ref()).await;
-            let slice = lmr2.as_slice();
-            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            // let lmr_w = lmr2.write().unwrap();
+            // let lmr = binding.deref_mut();
+            rdma2.read(lmr2.write().deref_mut(), rmr2.as_ref()).await;
+            // let lmr_r = lmr2.read().unwrap();
+            // let slice = lmr_r.as_slice();
+            // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            // drop(slice);
         });
         let start_time = Instant::now();
         // rdma.read(&mut lmr1, &rmr1).await;
