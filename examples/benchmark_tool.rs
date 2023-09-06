@@ -158,16 +158,20 @@ async fn main() {
         let rmr1_o = Arc::new(remote_mrs.remove(0));
         let rmr2_o = Arc::new(remote_mrs.remove(0));
 
-        let mut lmr1_e = Arc::clone(&lmr1);
-        let mut lmr2_e = Arc::clone(&lmr2);
+        let mut lmr_ls = Vec::with_capacity(2);
+        lmr_ls.push(lmr1);
+        lmr_ls.push(lmr2);
+
+        // let mut lmr1_e = Arc::clone(&lmr1);
+        // let mut lmr2_e = Arc::clone(&lmr2);
         let rmr1 = Arc::clone(&rmr1_o);
         let rmr2 = Arc::clone(&rmr2_o);
 
         {
-            let lmr1_er = lmr1_e.read();
+            let lmr1_er = lmr_ls[0].read();
             let slice = lmr1_er.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-            let lmr2_er = lmr2_e.read();
+            let lmr2_er = lmr_ls[1].read();
             let slice = lmr2_er.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
         }
@@ -175,12 +179,14 @@ async fn main() {
         let rdma_arc = Arc::new(rdma);
         let rdma1 = Arc::clone(&rdma_arc);
         let rdma2 = Arc::clone(&rdma_arc);
-
+        
+        let mut lmr1_n = Arc::clone(&lmr_ls[0]);
+        let mut lmr2_n = Arc::clone(&lmr_ls[1]);
         let jh1 = tokio::spawn(async move {
             // let lmr_w = lmr1.write().unwrap();
             // let lmr = binding.deref_mut();
-            rdma1.read(lmr1.write().deref_mut(), rmr1.as_ref()).await;
-            let lmr_r = lmr1.read();
+            rdma1.read(lmr1_n.write().deref_mut(), rmr1.as_ref()).await;
+            let lmr_r = lmr1_n.read();
             let slice = lmr_r.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
             // drop(slice);
@@ -188,8 +194,8 @@ async fn main() {
         let jh2 = tokio::spawn(async move {
             // let lmr_w = lmr2.write().unwrap();
             // let lmr = binding.deref_mut();
-            rdma2.read(lmr2.write().deref_mut(), rmr2.as_ref()).await;
-            let lmr_r = lmr2.read();
+            rdma2.read(lmr2_n.write().deref_mut(), rmr2.as_ref()).await;
+            let lmr_r = lmr2_n.read();
             let slice = lmr_r.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
             // drop(slice);
@@ -200,10 +206,10 @@ async fn main() {
         jh1.await;
         jh2.await;
         {
-            let lmr1_er = lmr1_e.read();
+            let lmr1_er = lmr_ls[0].read();
             let slice = lmr1_er.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-            let lmr2_er = lmr2_e.read();
+            let lmr2_er = lmr_ls[1].read();
             let slice = lmr2_er.as_slice();
             println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
         }
