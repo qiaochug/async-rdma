@@ -7,7 +7,7 @@ use async_rdma::{
 use clippy_utilities::Cast;
 use std::{alloc::Layout, 
     env, io::{self, Write}, 
-    process::exit, time::Instant,
+    process::exit, time::{Instant, Duration},
     sync::{Arc},
     ops::DerefMut};
 use rand::Rng;
@@ -158,10 +158,19 @@ async fn main() {
         let rmr1_o = Arc::new(remote_mrs.remove(0));
         let rmr2_o = Arc::new(remote_mrs.remove(0));
 
-        // let mut lmr1 = Arc::clone(&lmr1_o);
-        // let mut lmr2 = Arc::clone(&lmr2_o);
+        let mut lmr1_e = Arc::clone(&lmr1);
+        let mut lmr2_e = Arc::clone(&lmr2);
         let rmr1 = Arc::clone(&rmr1_o);
         let rmr2 = Arc::clone(&rmr2_o);
+
+        {
+            let lmr1_er = lmr1_e.read();
+            let slice = lmr1_er.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            let lmr2_er = lmr2_e.read();
+            let slice = lmr2_er.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+        }
 
         let rdma_arc = Arc::new(rdma);
         let rdma1 = Arc::clone(&rdma_arc);
@@ -171,18 +180,18 @@ async fn main() {
             // let lmr_w = lmr1.write().unwrap();
             // let lmr = binding.deref_mut();
             rdma1.read(lmr1.write().deref_mut(), rmr1.as_ref()).await;
-            // let lmr_r = lmr1.read().unwrap();
-            // let slice = lmr_r.as_slice();
-            // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            let lmr_r = lmr1.read();
+            let slice = lmr_r.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
             // drop(slice);
         });
         let jh2 = tokio::spawn(async move {
             // let lmr_w = lmr2.write().unwrap();
             // let lmr = binding.deref_mut();
             rdma2.read(lmr2.write().deref_mut(), rmr2.as_ref()).await;
-            // let lmr_r = lmr2.read().unwrap();
-            // let slice = lmr_r.as_slice();
-            // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            let lmr_r = lmr2.read();
+            let slice = lmr_r.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
             // drop(slice);
         });
         let start_time = Instant::now();
@@ -190,10 +199,14 @@ async fn main() {
         // rdma.read(&mut lmr2, &rmr2).await;
         jh1.await;
         jh2.await;
-        // let slice = Arc::clone(&lmr1).as_slice();
-        // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-        // let slice = lmr2_o.as_slice();
-        // println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+        {
+            let lmr1_er = lmr1_e.read();
+            let slice = lmr1_er.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+            let lmr2_er = lmr2_e.read();
+            let slice = lmr2_er.as_slice();
+            println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
+        }
         let end_time = Instant::now();
         let elapsed_time = end_time - start_time;
 
@@ -204,8 +217,10 @@ async fn main() {
         let elapsed_nanoseconds = elapsed_time.as_nanos();
         println!("Elapsed time: {} nanoseconds", elapsed_nanoseconds);
         println!("Average Elapsed time: {} nanoseconds", elapsed_nanoseconds as f64/2.0);
+    } else {
+        tokio::time::sleep(Duration::new(5, 0)).await;
     }
-
+    //TODO: add sync
     
 
     // // both client and server has acces to their local_mrs after this
