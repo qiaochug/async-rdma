@@ -127,14 +127,14 @@ async fn main() {
     } else {
         rdma_builder.connect(addr.clone()).await.unwrap()
     };
-    println!("RDMA 0 qp{:?}", rdma_o);
+    // println!("RDMA 0 qp{:?}", rdma_o);
     for i in 1..qp_num {
         let rdma = if iamserver {
             rdma_o.listen().await.unwrap()
         } else {
             rdma_o.new_connect(addr.clone()).await.unwrap()
         };
-        println!("RDMA {} qp {:?}", i, rdma);
+        // println!("RDMA {} qp {:?}", i, rdma);
         let rdma_arc = Arc::new(rdma);
         rdmas.push(rdma_arc);
     }
@@ -152,9 +152,9 @@ async fn main() {
             }
             println!("Server lmr {} {:?}", i, lmr);
             println!("{:?}", *lmr.as_slice());
-            rdmas[i].send_local_mr(lmr).await;
+            rdmas[1-i].send_local_mr(lmr).await;
         } else {
-            let mut rmr = rdmas[i].receive_remote_mr().await.unwrap();
+            let mut rmr = rdmas[1-i].receive_remote_mr().await.unwrap();
             println!("Client rmr {} {:?}", i, rmr);
             rmrs.push(rmr);
         }
