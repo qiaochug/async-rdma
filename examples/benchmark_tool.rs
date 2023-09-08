@@ -61,6 +61,25 @@ async fn return_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut 
     Ok(())
 }
 
+async fn resend_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
+    req_num: usize, iamserver: bool) -> io::Result<()>{
+
+        for i in 0..req_num {
+    
+            if iamserver {
+                let lmr = local_mrs.remove(0);
+                // server re-send local mrs to client
+                rdma.send_local_mr(lmr).await?;
+            } else {
+                // client receives and save remote mrs
+                let rmr = rdma.receive_remote_mr().await?;
+                remote_mrs.push(rmr);
+            }
+        }
+
+    Ok(())
+}
+
 async fn print_mrs(rdma: &Rdma, local_mrs: &Vec<LocalMr>, req_num: usize) -> io::Result<()>{
 
     for i in 0..req_num {
@@ -156,6 +175,10 @@ async fn main() {
     println!("remote_mrs num: {}", remote_mrs.len());
 
     print_mrs(&rdmas[0], &local_mrs, req_num).await.unwrap();
+
+    resend_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
+    println!("local_mrs num: {}", local_mrs.len());
+    println!("remote_mrs num: {}", remote_mrs.len());
 
     if iamserver {
         println!("Server up!");
