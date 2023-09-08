@@ -22,7 +22,7 @@ async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<Arc<RwLock<LocalMr>>>, rem
 
         // write data into lmr
         let i_u8 : u8 = u8::try_from(i % 10).ok().unwrap();
-        let fill: u8 = if iamserver { i_u8 } else { 10 - i_u8 };
+        let fill: u8 = if iamserver { 10 + i_u8 } else { i_u8 };
         for byte in lmr.get_mut(0..req_size).unwrap().as_mut_slice().iter_mut() {
             *byte = fill;
         }
@@ -73,7 +73,7 @@ async fn print_mrs_wrapped(rdma: &Rdma, local_mrs: &Vec<Arc<RwLock<LocalMr>>>) -
 
 }
 
-async fn execute_request(rdma: &Rdma, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
+async fn execute_request(rdma: Arc<Rdma>, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
     let start_t = Instant::now();    
     if (op == 1) {
         rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
@@ -209,49 +209,56 @@ async fn main() {
         println!("Client up!");
     }
 
-    // let mut rng = rand::thread_rng();
-    // let mut operation_list: Vec<usize> = Vec::new();
+    let mut rng = rand::thread_rng();
+    let mut operation_list: Vec<usize> = Vec::new();
 
-    // // Generate random 0s and 1s to represent read (1) or write (0)
-    // if !iamserver {
-    //     let mut read_num = 0;
-    //     for _ in 0..req_num {
-    //         let random_value: f64 = rng.gen();
-    //         if random_value < read_pct {
-    //             operation_list.push(1);
-    //             read_num += 1;
-    //         } else {
-    //             operation_list.push(0);
-    //         }
-    //     }
-    //     let effective_read_pct = read_num as f64/req_num as f64;
-    //     println!("Effective read/write {:?}:", operation_list);
-    //     println!("Effective Read_pct {:.2}:", effective_read_pct);
-    // }
+    // Generate random 0s and 1s to represent read (1) or write (0)
+    if !iamserver {
+        let mut read_num = 0;
+        for _ in 0..req_num {
+            let random_value: f64 = rng.gen();
+            if random_value < read_pct {
+                operation_list.push(1);
+                read_num += 1;
+            } else {
+                operation_list.push(0);
+            }
+        }
+        let effective_read_pct = read_num as f64/req_num as f64;
+        println!("Effective read/write {:?}:", operation_list);
+        println!("Effective Read_pct {:.2}:", effective_read_pct);
+    }
 
-    // // Generate QP assignments
-    // let mut qp_alloc: Vec<usize> = Vec::new();
-    // if !iamserver {
-    //     qp_alloc = allocate_workload(req_num, qp_num);
-    // }
+    // Generate QP assignments
+    let mut qp_alloc: Vec<usize> = Vec::new();
+    if !iamserver {
+        qp_alloc = allocate_workload(req_num, qp_num);
+    }
 
-    // let mut jhs = Vec::with_capacity(req_num);
-    // for i in 0..req_num {
-    //     let qp = rdmas[qp_alloc[i]];
-    //     let op = operation_list[i];
-    //     if !iamserver {
-    //         let jh = tokio::spawn(async move {
-    //                     execute_request(rdma, i, operation_list[i], )
-    //                 });
-    //         jhs.push(jh);
-    //     }
-    
-    // }
+    // Spawn tasks
+    if !iamserver {
+        let mut jhs = Vec::with_capacity(req_num);
+        for i in 0..req_num {
+            let rdma_qp = Arc::clone(&rdmas[qp_alloc[i]]);
+            let op = operation_list[i];
+            let lmr = Arc::clone(&local_mrs[i]);
+            let rmr = Arc::clone(&remote_mrs[i]);
+            if !iamserver {
+                let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
+                jhs.push(jh);
+            }
+        
+        }
 
-    // let mut results = Vec::with_capacity(req_num);
-    // for i in 0..req_num {
-    //     results.push(jhs[i].await.unwrap());
-    // }
+        let mut results = Vec::with_capacity(req_num);
+        for i in 0..req_num {
+            let jh = jhs.remove(0);
+            results.push(jh.await.unwrap().unwrap());
+        }
+        for i in 0..req_num {
+            println!("{:?}", results[i]);
+        }
+    }
 
     // both client and server has acces to their local_mrs after this
     return_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
