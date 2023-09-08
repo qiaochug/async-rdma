@@ -21,7 +21,8 @@ async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut
         let mut lmr = rdma.alloc_local_mr(Layout::array::<u8>(req_size).unwrap())?;
 
         // write data into lmr
-        let fill = if iamserver { 1_u8 } else { 0_u8 };
+        let i_u8 : u8 = u8::try_from(i % 10).ok().unwrap();
+        let fill: u8 = if iamserver { i_u8 } else { 10 - i_u8 };
         for byte in lmr.get_mut(0..req_size).unwrap().as_mut_slice().iter_mut() {
             *byte = fill;
         }
@@ -119,6 +120,7 @@ async fn main() {
     println!("QP Number: {}", qp_num);
     println!("Read Percentage: {}", read_pct);
 
+    // Prepare QPs
     let rdma_builder = RdmaBuilder::default().set_dev("mlx5_0").set_imm_flag_in_wc(2).unwrap();
     let mut rdmas = Vec::with_capacity(qp_num);
 
@@ -141,34 +143,19 @@ async fn main() {
     let rdma_arc = Arc::new(rdma_o);
     rdmas.insert(0, rdma_arc);
 
-    let mut rmrs = Vec::with_capacity(2);
-    for i in 0..qp_num {
-        if iamserver {
-            let mut lmr = rdmas[i].alloc_local_mr(Layout::array::<u8>(8).unwrap()).unwrap();
-            if (i == 0) {
-                let _num = lmr.as_mut_slice().write(&[0_u8; 8]);
-            } else {
-                let _num = lmr.as_mut_slice().write(&[1_u8; 8]);
-            }
-            println!("Server lmr {} {:?}", i, lmr);
-            println!("{:?}", *lmr.as_slice());
-            rdmas[1-i].send_local_mr(lmr).await;
-        } else {
-            let mut rmr = rdmas[1-i].receive_remote_mr().await.unwrap();
-            println!("Client rmr {} {:?}", i, rmr);
-            rmrs.push(rmr);
-        }
-    }
-    if !iamserver {
-        for i in 0..qp_num {
-            let mut lmr = rdmas[i].alloc_local_mr(Layout::array::<u8>(8).unwrap()).unwrap();
-            rdmas[i].read(&mut lmr, &rmrs[i]).await;
-            let data = *lmr.as_slice();
-            println!("Client read rmr {} {:?}", i, data);
-        }
-    } else {
-        tokio::time::sleep(Duration::new(5, 0)).await;
-    }
+    let mut local_mrs = Vec::with_capacity(req_num);
+    let mut remote_mrs = Vec::with_capacity(req_num);
+    // only the client has access to local_mrs and remote_mrs for now
+    prepare_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, req_size, iamserver).await.unwrap();
+    println!("local_mrs num: {}", local_mrs.len());
+    println!("remote_mrs num: {}", remote_mrs.len());
+
+    // // both client and server has acces to their local_mrs after this
+    return_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
+    println!("local_mrs num: {}", local_mrs.len());
+    println!("remote_mrs num: {}", remote_mrs.len());
+
+    print_mrs(&rdmas[0], &local_mrs, req_num).await.unwrap();
 
     if iamserver {
         println!("Server up!");
