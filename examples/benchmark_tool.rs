@@ -91,6 +91,56 @@ async fn print_mrs(rdma: &Rdma, local_mrs: &Vec<LocalMr>, req_num: usize) -> io:
 
 }
 
+// async fn execute_request(rdma: &Rdma, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
+//     let start_t = Instant::now();    
+//     if (op == 1) {
+//         rdma.read(lmr.write().deref_mut(), rmr.as_ref()).await;
+//     } else {
+//         rdma.write(lmr.as_ref(), rmr.write().deref_mut()).await;
+//     }
+//     let end_t = Instant::now();
+
+//     let result = op_ret {
+//         index,
+//         op,
+//         start_t,
+//         end_t
+//     };
+
+//     Ok(result)
+// }
+
+#[derive(Debug)]
+struct op_ret {
+    index: usize,
+    op: usize,
+    start_t: Instant,
+    end_t: Instant
+}
+
+fn allocate_workload(req_num: usize, qp_num: usize) -> Vec<usize> {
+    let mut sub_req_num = vec![req_num / qp_num; qp_num]; // Initialize with equal distribution
+    let remainder = req_num % qp_num;
+
+    // Distribute the remainder req_num evenly
+    for i in 0..remainder {
+        sub_req_num[i] += 1;
+    }
+
+    println!("Each QP assigned req_num: {:?}", sub_req_num);
+
+    let mut allocation = Vec::with_capacity(req_num);
+    for i in 0..qp_num {
+        for j in 0..sub_req_num[i] {
+            allocation.push(i);
+        }
+    }
+
+    println!("Flattened QP assignment: {:?}", allocation);
+
+    allocation
+}
+
 #[tokio::main]
 async fn main() {
     println!("Benchmark tool start");
@@ -169,16 +219,50 @@ async fn main() {
     println!("local_mrs num: {}", local_mrs.len());
     println!("remote_mrs num: {}", remote_mrs.len());
 
+    let mut rng = rand::thread_rng();
+    let mut operation_list: Vec<usize> = Vec::new();
+
+    // Generate random 0s and 1s to represent read (1) or write (0)
+    let mut read_num = 0;
+    for _ in 0..req_num {
+        let random_value: f64 = rng.gen();
+        if random_value < read_pct {
+            operation_list.push(1);
+            read_num += 1;
+        } else {
+            operation_list.push(0);
+        }
+    }
+    let effective_read_pct = read_num as f64/req_num as f64;
+    println!("Effective read/write {:?}:", operation_list);
+    println!("Effective Read_pct {:.2}:", effective_read_pct);
+
+    // Generate QP assignments
+    let allocation = allocate_workload(req_num, qp_num);
+
+    // let mut jhs = Vec::with_capacity(req_num);
+    // for i in 0..req_num {
+
+    //     if !iamserver {
+    //         let jh = tokio::spawn(async move {
+    //                     execute_request()
+    //                 });
+    //         jhs.push(jh);
+    //     }
+    
+    // }
+
+    // let mut results = Vec::with_capacity(req_num);
+    // for i in 0..req_num {
+    //     results.push(jhs[i].await.unwrap());
+    // }
+
     // // both client and server has acces to their local_mrs after this
     return_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
     println!("local_mrs num: {}", local_mrs.len());
     println!("remote_mrs num: {}", remote_mrs.len());
 
     print_mrs(&rdmas[0], &local_mrs, req_num).await.unwrap();
-
-    resend_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
-    println!("local_mrs num: {}", local_mrs.len());
-    println!("remote_mrs num: {}", remote_mrs.len());
 
     if iamserver {
         println!("Server up!");
@@ -292,33 +376,6 @@ async fn main() {
     // println!("remote_mrs num: {}", remote_mrs.len());
 
     // print_mrs(&rdma, &local_mrs, req_num).await.unwrap();
-
-    
-
-    // let mut rng = rand::thread_rng();
-    // let mut operation_list: Vec<i32> = Vec::new();
-
-    // // Generate random 0s and 1s to represent read (1) or write (0)
-    // let mut read_num = 1;
-    // for _ in 0..req_num {
-    //     let random_value: f64 = rng.gen();
-    //     if random_value < read_pct {
-    //         operation_list.push(1);
-    //         read_num += 1;
-    //     } else {
-    //         operation_list.push(0);
-    //     }
-    // }
-    // let effective_read_pct = read_num as f64/req_num as f64;
-    // println!("Effective Read_pct {:.2}:", effective_read_pct);
-
-    // for i in 0..req_num {
-
-    //     if operation_list[i] == 1 {
-    //         println!("Performing read operation");
-    //     } else {
-    //         println!("Performing write operation");
-    //     }
 
     // }
     if iamserver {
