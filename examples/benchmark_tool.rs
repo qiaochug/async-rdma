@@ -9,11 +9,11 @@ use std::{alloc::Layout,
     env, io::{self, Write}, 
     process::exit, time::{Instant, Duration},
     sync::{Arc},
-    ops::DerefMut};
+    ops::{DerefMut, Deref}};
 use rand::Rng;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
+async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &mut Vec<Arc<RwLock<RemoteMr>>>,
     req_num: usize, req_size: usize, iamserver: bool) -> io::Result<()>{
 
     for i in 0..req_num {
@@ -32,58 +32,40 @@ async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut
             rdma.send_local_mr(lmr).await?;
         } else {
             // client saves local mrs
-            local_mrs.push(lmr);
+            local_mrs.push(Arc::new(RwLock::new(lmr)));
 
             // client receives and save remote mrs
             let rmr = rdma.receive_remote_mr().await?;
-            remote_mrs.push(rmr);
+            remote_mrs.push(Arc::new(RwLock::new(rmr)));
         }
     }
 
     Ok(())
 }
 
-async fn return_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
+async fn return_mrs(rdma: &Rdma, local_mrs: &mut Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &mut Vec<Arc<RwLock<RemoteMr>>>,
     req_num: usize, iamserver: bool) -> io::Result<()>{
 
     for i in 0..req_num {
         if iamserver {
             // server receives local mrs
             let lmr = rdma.receive_local_mr().await?;
-            local_mrs.push(lmr);
+            local_mrs.push(Arc::new(RwLock::new(lmr)));
         } else {
             let rmr = remote_mrs.remove(0);
             // client sends remote mrs
-            rdma.send_remote_mr(rmr).await?;
+            rdma.send_remote_mr(Arc::into_inner(rmr).unwrap().into_inner()).await?;
         }
     }
 
     Ok(())
 }
 
-async fn resend_mrs(rdma: &Rdma, local_mrs: &mut Vec<LocalMr>, remote_mrs: &mut Vec<RemoteMr>,
-    req_num: usize, iamserver: bool) -> io::Result<()>{
+async fn print_mrs_wrapped(rdma: &Rdma, local_mrs: &Vec<Arc<RwLock<LocalMr>>>) -> io::Result<()>{
 
-        for i in 0..req_num {
-    
-            if iamserver {
-                let lmr = local_mrs.remove(0);
-                // server re-send local mrs to client
-                rdma.send_local_mr(lmr).await?;
-            } else {
-                // client receives and save remote mrs
-                let rmr = rdma.receive_remote_mr().await?;
-                remote_mrs.push(rmr);
-            }
-        }
-
-    Ok(())
-}
-
-async fn print_mrs(rdma: &Rdma, local_mrs: &Vec<LocalMr>, req_num: usize) -> io::Result<()>{
-
-    for i in 0..req_num {
-        let slice = local_mrs[i].as_slice();
+    for i in 0..local_mrs.len() {
+        let mr_r = local_mrs[i].read();
+        let slice = mr_r.as_slice();
         println!("Index {} First {:?} Last {:?} Size {}", i, slice.get(0), slice.get(slice.len() - 1), slice.len());
     }
 
@@ -91,24 +73,24 @@ async fn print_mrs(rdma: &Rdma, local_mrs: &Vec<LocalMr>, req_num: usize) -> io:
 
 }
 
-// async fn execute_request(rdma: &Rdma, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
-//     let start_t = Instant::now();    
-//     if (op == 1) {
-//         rdma.read(lmr.write().deref_mut(), rmr.as_ref()).await;
-//     } else {
-//         rdma.write(lmr.as_ref(), rmr.write().deref_mut()).await;
-//     }
-//     let end_t = Instant::now();
+async fn execute_request(rdma: &Rdma, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
+    let start_t = Instant::now();    
+    if (op == 1) {
+        rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
+    } else {
+        rdma.write(lmr.read().deref(), rmr.write().deref_mut()).await;
+    }
+    let end_t = Instant::now();
 
-//     let result = op_ret {
-//         index,
-//         op,
-//         start_t,
-//         end_t
-//     };
+    let result = op_ret {
+        index,
+        op,
+        start_t,
+        end_t
+    };
 
-//     Ok(result)
-// }
+    Ok(result)
+}
 
 #[derive(Debug)]
 struct op_ret {
@@ -216,36 +198,50 @@ async fn main() {
     let mut remote_mrs = Vec::with_capacity(req_num);
     // only the client has access to local_mrs and remote_mrs for now
     prepare_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, req_size, iamserver).await.unwrap();
-    println!("local_mrs num: {}", local_mrs.len());
-    println!("remote_mrs num: {}", remote_mrs.len());
+    println!("-------- Setup MRs: --------");
+    println!("self-accessible local_mrs num: {}", local_mrs.len());
+    println!("self-accessible remote_mrs num: {}", remote_mrs.len());
+    print_mrs_wrapped(&rdmas[0], &local_mrs).await;
 
-    let mut rng = rand::thread_rng();
-    let mut operation_list: Vec<usize> = Vec::new();
-
-    // Generate random 0s and 1s to represent read (1) or write (0)
-    let mut read_num = 0;
-    for _ in 0..req_num {
-        let random_value: f64 = rng.gen();
-        if random_value < read_pct {
-            operation_list.push(1);
-            read_num += 1;
-        } else {
-            operation_list.push(0);
-        }
+    if iamserver {
+        println!("Server up!");
+    } else {
+        println!("Client up!");
     }
-    let effective_read_pct = read_num as f64/req_num as f64;
-    println!("Effective read/write {:?}:", operation_list);
-    println!("Effective Read_pct {:.2}:", effective_read_pct);
 
-    // Generate QP assignments
-    let allocation = allocate_workload(req_num, qp_num);
+    // let mut rng = rand::thread_rng();
+    // let mut operation_list: Vec<usize> = Vec::new();
+
+    // // Generate random 0s and 1s to represent read (1) or write (0)
+    // if !iamserver {
+    //     let mut read_num = 0;
+    //     for _ in 0..req_num {
+    //         let random_value: f64 = rng.gen();
+    //         if random_value < read_pct {
+    //             operation_list.push(1);
+    //             read_num += 1;
+    //         } else {
+    //             operation_list.push(0);
+    //         }
+    //     }
+    //     let effective_read_pct = read_num as f64/req_num as f64;
+    //     println!("Effective read/write {:?}:", operation_list);
+    //     println!("Effective Read_pct {:.2}:", effective_read_pct);
+    // }
+
+    // // Generate QP assignments
+    // let mut qp_alloc: Vec<usize> = Vec::new();
+    // if !iamserver {
+    //     qp_alloc = allocate_workload(req_num, qp_num);
+    // }
 
     // let mut jhs = Vec::with_capacity(req_num);
     // for i in 0..req_num {
-
+    //     let qp = rdmas[qp_alloc[i]];
+    //     let op = operation_list[i];
     //     if !iamserver {
     //         let jh = tokio::spawn(async move {
-    //                     execute_request()
+    //                     execute_request(rdma, i, operation_list[i], )
     //                 });
     //         jhs.push(jh);
     //     }
@@ -257,18 +253,12 @@ async fn main() {
     //     results.push(jhs[i].await.unwrap());
     // }
 
-    // // both client and server has acces to their local_mrs after this
+    // both client and server has acces to their local_mrs after this
     return_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
-    println!("local_mrs num: {}", local_mrs.len());
-    println!("remote_mrs num: {}", remote_mrs.len());
-
-    print_mrs(&rdmas[0], &local_mrs, req_num).await.unwrap();
-
-    if iamserver {
-        println!("Server up!");
-    } else {
-        println!("Client up!");
-    }
+    println!("-------- After Ops MRs: --------");
+    println!("self-accessible local_mrs num: {}", local_mrs.len());
+    println!("self-accessible remote_mrs num: {}", remote_mrs.len());
+    print_mrs_wrapped(&rdmas[0], &local_mrs).await.unwrap();
 
     // let mut local_mrs = Vec::with_capacity(req_num);
     // let mut remote_mrs = Vec::with_capacity(req_num);
