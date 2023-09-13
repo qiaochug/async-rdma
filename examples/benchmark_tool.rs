@@ -255,10 +255,10 @@ fn calc_summary_stat(data: &Vec<f64>) -> summary_stat {
     return summary_stat { len, sum, mean, std };
 }
 
-fn generate_filename(req_num: usize, req_size: usize, read_pct: f64, qp_num: usize, thread_num: usize) -> String {
+fn generate_filename(req_num: usize, req_size: usize, read_pct: f64, qp_num: usize, qp_size: usize, thread_num: usize) -> String {
     let time = Local::now().format("%Y%m%d%H%M%S").to_string();
-    return format!("{}_req_size_{}_req_num_{}_queue_num_{}_read_pct_{}_thread_num_{}.exp_log",
-        time, req_size, req_num, qp_num, read_pct, thread_num
+    return format!("{}_req_size_{}_req_num_{}_queue_size_{}_queue_num_{}_read_pct_{}_thread_num_{}.exp_log",
+        time, req_size, req_num, qp_size, qp_num, read_pct, thread_num
     )
 }
 
@@ -272,12 +272,17 @@ async fn main_async(cfg: config) {
         req_num,
         req_size,
         qp_num,
+        qp_size,
         read_pct,
         thread_num
     } = cfg;
 
     // Prepare QPs
-    let rdma_builder = RdmaBuilder::default().set_dev("mlx5_0").set_imm_flag_in_wc(2).unwrap();
+    let rdma_builder = RdmaBuilder::default()
+                        .set_dev("mlx5_0")
+                        .set_qp_max_recv_wr(qp_size as u32)
+                        .set_imm_flag_in_wc(2)
+                        .unwrap();
     let mut rdmas = Vec::with_capacity(qp_num);
 
     let mut rdma_o = if iamserver {
@@ -320,7 +325,7 @@ async fn main_async(cfg: config) {
     let mut lat_std = Vec::with_capacity(EXPERIMENT_REPEATS);
     let mut eff_read_pct = Vec::with_capacity(EXPERIMENT_REPEATS);
     if !iamserver {
-        let log_file_name = generate_filename(req_num, req_size, read_pct, qp_num, thread_num);
+        let log_file_name = generate_filename(req_num, req_size, read_pct, qp_num, qp_size, thread_num);
         let mut log_file = File::create(log_file_name).unwrap();
 
         for i in 0..EXPERIMENT_REPEATS {
@@ -378,6 +383,7 @@ struct config {
     req_num: usize,
     req_size: usize,
     qp_num: usize,
+    qp_size: usize,
     read_pct: f64,
     thread_num: usize
 }
@@ -394,6 +400,7 @@ fn main() {
     let mut req_num = 8;
     let mut req_size = 4096;
     let mut qp_num = 1;
+    let mut qp_size = 256;
     let mut read_pct = 1.0;
     let mut thread_num = 1;
 
@@ -414,6 +421,8 @@ fn main() {
             req_size = arg[9..].parse().unwrap();
         } else if arg.starts_with("qp_num=") {
             qp_num = arg[7..].parse().unwrap();
+        } else if arg.starts_with("qp_size=") {
+            qp_size = arg[8..].parse().unwrap();
         } else if arg.starts_with("read_pct=") {
             read_pct = arg[9..].parse().unwrap();
         } else if arg.starts_with("thread_num=") {
@@ -431,6 +440,7 @@ fn main() {
     println!("Request Number: {}", req_num);
     println!("Request Size: {}", req_size);
     println!("QP Number: {}", qp_num);
+    println!("QP Size: {}", qp_size);
     println!("Read Percentage: {}", read_pct);
     println!("Thread Number: {}", thread_num);
 
@@ -440,6 +450,7 @@ fn main() {
         req_num,
         req_size,
         qp_num,
+        qp_size,
         read_pct,
         thread_num
     };
