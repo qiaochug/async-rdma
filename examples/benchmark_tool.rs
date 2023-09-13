@@ -11,7 +11,10 @@ use std::{alloc::Layout,
     sync::{Arc},
     ops::{DerefMut, Deref}};
 use rand::Rng;
+use chrono::Local;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::io::prelude::*;
+use std::fs::File;
 
 async fn prepare_mrs(rdma: &Rdma, local_mrs: &mut Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &mut Vec<Arc<RwLock<RemoteMr>>>,
     req_num: usize, req_size: usize, iamserver: bool) -> io::Result<()>{
@@ -118,7 +121,7 @@ fn allocate_workload(req_num: usize, qp_num: usize) -> Vec<usize> {
         sub_req_num[i] += 1;
     }
 
-    println!("Each QP assigned req_num: {:?}", sub_req_num);
+    // println!("Each QP assigned req_num: {:?}", sub_req_num);
 
     let mut allocation = Vec::with_capacity(req_num);
     for i in 0..qp_num {
@@ -127,15 +130,13 @@ fn allocate_workload(req_num: usize, qp_num: usize) -> Vec<usize> {
         }
     }
 
-    println!("Flattened QP assignment: {:?}", allocation);
-
     allocation
 }
 
 async fn run_experiment(
     req_num: usize, req_size: usize, read_pct: f64, qp_num: usize, rdmas: &Vec<Arc<Rdma>>, 
-    local_mrs: &Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &Vec<Arc<RwLock<RemoteMr>>>,
-    avg_lat: &mut Vec<f64>, avg_thr: &mut Vec<f64>, lat_std: &mut Vec<f64>, eff_read_pct: &mut Vec<f64>
+    local_mrs: &Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &Vec<Arc<RwLock<RemoteMr>>>, log_file: &mut File,
+    avg_lats: &mut Vec<f64>, avg_thrs: &mut Vec<f64>, lat_stds: &mut Vec<f64>, eff_read_pcts: &mut Vec<f64>
 ) -> io::Result<()> {
 
     let mut rng = rand::thread_rng();
@@ -153,11 +154,12 @@ async fn run_experiment(
         }
     }
     let effective_read_pct = read_num as f64/req_num as f64;
-    println!("Effective read/write {:?}:", operation_list);
+    write!(log_file, "Effective read/write: {:?}\n", operation_list);
 
     // Generate QP assignments
     let mut qp_alloc: Vec<usize> = Vec::new();
     qp_alloc = allocate_workload(req_num, qp_num);
+    write!(log_file, "Flattened QP assignment: {:?}\n", qp_alloc);
 
     // Create and execute requests
     let mut jhs = Vec::with_capacity(req_num);
@@ -204,7 +206,7 @@ async fn run_experiment(
         total_lat += result_adj.duration;
         total_read += result_adj.op;
 
-        println!("{:?}", result_adj);
+        write!(log_file, "{:?}\n", result_adj);
     }
 
     let avg_lat = total_lat / req_num as f64;
@@ -212,8 +214,11 @@ async fn run_experiment(
     let avg_thr = req_size as f64 * req_num as f64 / total_duration_sec;
     let lat_std = calc_summary_stat(&lats).std;
     let eff_read_pct = total_read / req_num as f64;
-    println!("average_latency: {:.0} nsec, average_throughput {:.0} byte/sec, latency_std: {:.0}, effective_read_pct: {:.2}",
-    avg_lat, avg_thr, lat_std, eff_read_pct);
+
+    avg_lats.push(avg_lat);
+    avg_thrs.push(avg_thr);
+    lat_stds.push(lat_std);
+    eff_read_pcts.push(eff_read_pct);
 
     Ok(())
 }
@@ -248,6 +253,14 @@ fn calc_summary_stat(data: &Vec<f64>) -> summary_stat {
 
     return summary_stat { len, sum, mean, std };
 }
+
+fn generate_filename(req_num: usize, req_size: usize, read_pct: f64, qp_num: usize, thread_num: usize) -> String {
+    let time = Local::now().format("%Y%m%d%H%M%S").to_string();
+    return format!("{}_req_size_{}_req_num_{}_queue_num_{}_read_pct_{}_thread_num_{}.exp_log",
+        time, req_size, req_num, qp_num, read_pct, thread_num
+    )
+}
+
 #[tokio::main]
 async fn main() {
     println!("Benchmark tool start");
@@ -261,6 +274,7 @@ async fn main() {
     let mut req_size = 4096;
     let mut qp_num = 1;
     let mut read_pct = 1.0;
+    let mut thread_num = 1;
 
     let usage = r#"Usage: cargo run --example client_configurable iamserver=<0or1> host=<server-addr>
      port=<server-port> req_num=<req_num> req_size=<req_size>
@@ -281,9 +295,11 @@ async fn main() {
             qp_num = arg[7..].parse().unwrap();
         } else if arg.starts_with("read_pct=") {
             read_pct = arg[9..].parse().unwrap();
+        } else if arg.starts_with("thread_num=") {
+            thread_num = arg[11..].parse().unwrap();
         } else {
-            println!("{}", usage);
-        }
+                println!("{}", usage);
+            }
     }
     let addr = format!("{}:{}", ip, port);
 
@@ -295,6 +311,7 @@ async fn main() {
     println!("Request Size: {}", req_size);
     println!("QP Number: {}", qp_num);
     println!("Read Percentage: {}", read_pct);
+    println!("Thread Number: {}", thread_num);
 
     // Prepare QPs
     let rdma_builder = RdmaBuilder::default().set_dev("mlx5_0").set_imm_flag_in_wc(2).unwrap();
@@ -340,13 +357,42 @@ async fn main() {
     let mut lat_std = Vec::with_capacity(EXPERIMENT_REPEATS);
     let mut eff_read_pct = Vec::with_capacity(EXPERIMENT_REPEATS);
     if !iamserver {
-        for i in 0..EXPERIMENT_REPEATS {
-            run_experiment(req_num, req_size, read_pct, qp_num,
-                &rdmas, &local_mrs, &remote_mrs,
-                &mut avg_lat, &mut avg_thr, &mut lat_std, &mut eff_read_pct).await;
-        }
-    }
+        let log_file_name = generate_filename(req_num, req_size, read_pct, qp_num, thread_num);
+        let mut log_file = File::create(log_file_name).unwrap();
 
+        for i in 0..EXPERIMENT_REPEATS {
+            write!(log_file, "\n------------ Exp {} ------------\n", i);
+
+            run_experiment(req_num, req_size, read_pct, qp_num,
+                &rdmas, &local_mrs, &remote_mrs, &mut log_file,
+                &mut avg_lat, &mut avg_thr, &mut lat_std, &mut eff_read_pct).await;
+            
+            let lat_std_pct = lat_std[i]/avg_lat[i] *100.0;
+
+            write!(log_file, "Average_latency: {:.0} nsec (std {:.1}%), average_throughput {:.0} byte/sec, effective_read_pct: {:.0}% (target {:.0}%)\n",
+            avg_lat[i],lat_std_pct, avg_thr[i], 
+            eff_read_pct[i] * 100.0, read_pct * 100.0);
+        }
+
+        let avg_lat_stat = calc_summary_stat(&avg_lat);
+        let avg_thr_stat = calc_summary_stat(&avg_thr);
+        let lat_std_stat = calc_summary_stat(&lat_std);
+        let eff_rpct_stat = calc_summary_stat(&eff_read_pct);
+
+        write!(log_file, "\n--------------------------\n");
+        write!(log_file, "Experiments average:\n");
+        write!(log_file, "Latency: mean {:.0} std {:.0} ({:.1}%)\n",
+                avg_lat_stat.mean, avg_lat_stat.std, avg_lat_stat.std / avg_lat_stat.mean * 100.0);
+        write!(log_file, "Throughput: mean {:.0} std {:.0} ({:.1}%)\n",
+                avg_thr_stat.mean, avg_thr_stat.std, avg_thr_stat.std / avg_thr_stat.mean * 100.0);
+        write!(log_file, "Latency in-experiment std: mean {:.0} ({:.1}% of cross-experiment mean) std {:.0} ({:.1}%)\n",
+                lat_std_stat.mean, lat_std_stat.mean / avg_lat_stat.mean * 100.0,
+                lat_std_stat.std, lat_std_stat.std / lat_std_stat.mean * 100.0);
+        write!(log_file, "Read-pct: mean {:.0}% std {:.0}%\n",
+                eff_rpct_stat.mean * 100.0, eff_rpct_stat.std * 100.0);
+
+    }
+    
     // both client and server has acces to their local_mrs after this
     return_mrs(&rdmas[0], &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
     println!("-------- After Ops MRs: --------");
