@@ -75,7 +75,7 @@ async fn print_mrs_wrapped(rdma: &Rdma, local_mrs: &Vec<Arc<RwLock<LocalMr>>>) -
 
 async fn execute_request(rdma: Arc<Rdma>, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
     let start_t = Instant::now();    
-    if (op == 1) {
+    if op == 1 {
         rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
     } else {
         rdma.write(lmr.read().deref(), rmr.write().deref_mut()).await;
@@ -98,6 +98,15 @@ struct op_ret {
     op: usize,
     start_t: Instant,
     end_t: Instant
+}
+
+#[derive(Debug)]
+struct op_ret_adj {
+    index: usize,
+    op: f64,
+    start_t: f64,
+    end_t: f64,
+    duration: f64
 }
 
 fn allocate_workload(req_num: usize, qp_num: usize) -> Vec<usize> {
@@ -123,6 +132,122 @@ fn allocate_workload(req_num: usize, qp_num: usize) -> Vec<usize> {
     allocation
 }
 
+async fn run_experiment(
+    req_num: usize, req_size: usize, read_pct: f64, qp_num: usize, rdmas: &Vec<Arc<Rdma>>, 
+    local_mrs: &Vec<Arc<RwLock<LocalMr>>>, remote_mrs: &Vec<Arc<RwLock<RemoteMr>>>,
+    avg_lat: &mut Vec<f64>, avg_thr: &mut Vec<f64>, lat_std: &mut Vec<f64>, eff_read_pct: &mut Vec<f64>
+) -> io::Result<()> {
+
+    let mut rng = rand::thread_rng();
+    let mut operation_list: Vec<usize> = Vec::new();
+
+    // Generate random 0s and 1s to represent read (1) or write (0)
+    let mut read_num = 0;
+    for _ in 0..req_num {
+        let random_value: f64 = rng.gen();
+        if random_value < read_pct {
+            operation_list.push(1);
+            read_num += 1;
+        } else {
+            operation_list.push(0);
+        }
+    }
+    let effective_read_pct = read_num as f64/req_num as f64;
+    println!("Effective read/write {:?}:", operation_list);
+
+    // Generate QP assignments
+    let mut qp_alloc: Vec<usize> = Vec::new();
+    qp_alloc = allocate_workload(req_num, qp_num);
+
+    // Create and execute requests
+    let mut jhs = Vec::with_capacity(req_num);
+    for i in 0..req_num {
+        let rdma_qp = Arc::clone(&rdmas[qp_alloc[i]]);
+        let op = operation_list[i];
+        let lmr = Arc::clone(&local_mrs[i]);
+        let rmr = Arc::clone(&remote_mrs[i]);
+        let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
+        jhs.push(jh);
+    }
+
+    let mut results = Vec::with_capacity(req_num);
+    for i in 0..req_num {
+        let jh = jhs.remove(0);
+        results.push(jh.await.unwrap().unwrap());
+    }
+
+    // Result analysis
+    let mut min_t = results[0].start_t;
+    let mut max_t = results[0].end_t;
+    for i in 1..req_num {
+        if results[i].start_t < min_t {
+            min_t = results[i].start_t;
+        }
+        if results[i].end_t > max_t {
+            max_t = results[i].end_t;
+        }
+    }
+
+    let mut total_lat: f64 = 0.0;
+    let mut total_read: f64 = 0.0;
+    let mut lats: Vec<f64> = Vec::with_capacity(req_num);
+    for i in 0..req_num {
+        let result = results.remove(0);
+        let result_adj = op_ret_adj {
+            index: result.index, 
+            op : result.op as f64,
+            start_t: (result.start_t - min_t).as_nanos() as f64,
+            end_t: (result.end_t - min_t).as_nanos() as f64,
+            duration: (result.end_t - result.start_t).as_nanos() as f64
+        };
+        lats.push(result_adj.duration);
+        total_lat += result_adj.duration;
+        total_read += result_adj.op;
+
+        println!("{:?}", result_adj);
+    }
+
+    let avg_lat = total_lat / req_num as f64;
+    let total_duration_sec = (max_t - min_t).as_secs_f64();
+    let avg_thr = req_size as f64 * req_num as f64 / total_duration_sec;
+    let lat_std = calc_summary_stat(&lats).std;
+    let eff_read_pct = total_read / req_num as f64;
+    println!("average_latency: {:.0} nsec, average_throughput {:.0} byte/sec, latency_std: {:.0}, effective_read_pct: {:.2}",
+    avg_lat, avg_thr, lat_std, eff_read_pct);
+
+    Ok(())
+}
+
+struct summary_stat {
+    len: f64,
+    sum: f64,
+    mean: f64,
+    std: f64
+}
+
+fn calc_summary_stat(data: &Vec<f64>) -> summary_stat {
+
+    let len: f64 = data.len() as f64;
+    let mut sum: f64 = 0.0;
+    for i in 0..data.len() {
+        sum += data[i];
+    }
+
+    let mean = sum / len;
+
+    let mut std: f64 = 0.0;
+    if data.len() > 1 {
+        let mut se: f64 = 0.0;
+        for i in 0..data.len() {
+            let diff = data[i] - mean;
+            se += diff * diff;
+        } 
+
+        std = (se / (len - 1.0)).sqrt();
+    }
+
+    return summary_stat { len, sum, mean, std };
+}
 #[tokio::main]
 async fn main() {
     println!("Benchmark tool start");
@@ -209,54 +334,16 @@ async fn main() {
         println!("Client up!");
     }
 
-    let mut rng = rand::thread_rng();
-    let mut operation_list: Vec<usize> = Vec::new();
-
-    // Generate random 0s and 1s to represent read (1) or write (0)
+    let EXPERIMENT_REPEATS = 3;
+    let mut avg_lat = Vec::with_capacity(EXPERIMENT_REPEATS);
+    let mut avg_thr = Vec::with_capacity(EXPERIMENT_REPEATS);
+    let mut lat_std = Vec::with_capacity(EXPERIMENT_REPEATS);
+    let mut eff_read_pct = Vec::with_capacity(EXPERIMENT_REPEATS);
     if !iamserver {
-        let mut read_num = 0;
-        for _ in 0..req_num {
-            let random_value: f64 = rng.gen();
-            if random_value < read_pct {
-                operation_list.push(1);
-                read_num += 1;
-            } else {
-                operation_list.push(0);
-            }
-        }
-        let effective_read_pct = read_num as f64/req_num as f64;
-        println!("Effective read/write {:?}:", operation_list);
-        println!("Effective Read_pct {:.2}:", effective_read_pct);
-    }
-
-    // Generate QP assignments
-    let mut qp_alloc: Vec<usize> = Vec::new();
-    if !iamserver {
-        qp_alloc = allocate_workload(req_num, qp_num);
-    }
-
-    // Spawn tasks
-    if !iamserver {
-        let mut jhs = Vec::with_capacity(req_num);
-        for i in 0..req_num {
-            let rdma_qp = Arc::clone(&rdmas[qp_alloc[i]]);
-            let op = operation_list[i];
-            let lmr = Arc::clone(&local_mrs[i]);
-            let rmr = Arc::clone(&remote_mrs[i]);
-            if !iamserver {
-                let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
-                jhs.push(jh);
-            }
-        
-        }
-
-        let mut results = Vec::with_capacity(req_num);
-        for i in 0..req_num {
-            let jh = jhs.remove(0);
-            results.push(jh.await.unwrap().unwrap());
-        }
-        for i in 0..req_num {
-            println!("{:?}", results[i]);
+        for i in 0..EXPERIMENT_REPEATS {
+            run_experiment(req_num, req_size, read_pct, qp_num,
+                &rdmas, &local_mrs, &remote_mrs,
+                &mut avg_lat, &mut avg_thr, &mut lat_std, &mut eff_read_pct).await;
         }
     }
 
@@ -267,114 +354,6 @@ async fn main() {
     println!("self-accessible remote_mrs num: {}", remote_mrs.len());
     print_mrs_wrapped(&rdmas[0], &local_mrs).await.unwrap();
 
-    // let mut local_mrs = Vec::with_capacity(req_num);
-    // let mut remote_mrs = Vec::with_capacity(req_num);
-    // // only the client has access to local_mrs and remote_mrs for now
-    // prepare_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, req_size, iamserver).await.unwrap();
-    // println!("local_mrs num: {}", local_mrs.len());
-    // println!("remote_mrs num: {}", remote_mrs.len());
-
-    // let mut lmr1_i = local_mrs.remove(0);
-    // let lmr1_o = Arc::new(lmr1_i);
-    // let rmr1_o = Arc::new(remote_mrs.remove(0));
-    // let lmr1 = Arc::clone(&lmr1_o);
-    // let rmr1 = Arc::clone(&rmr1_o);
-
-    // let rdma_arc = Arc::new(rdma);
-    // let rdma1 = Arc::clone(&rdma_arc);
-    // let rdma2 = Arc::clone(&rdma_arc);
-
-    // let jh1 = tokio::spawn(async move {rdma1.read(&mut lmr1, &rmr1).await;});
-    
-    // let mut join_handles = Vec::with_capacity(req_num);
-    // let start_time;
-    // if !iamserver {
-    //     let mut lmr1_i = local_mrs.remove(0);
-    //     let mut lmr1 = Arc::new(RwLock::new(lmr1_i));
-    //     let mut lmr2_i = local_mrs.remove(0);
-    //     let mut lmr2 = Arc::new(RwLock::new(lmr2_i));
-    //     let rmr1_o = Arc::new(remote_mrs.remove(0));
-    //     let rmr2_o = Arc::new(remote_mrs.remove(0));
-
-    //     let mut lmr_ls = Vec::with_capacity(2);
-    //     lmr_ls.push(lmr1);
-    //     lmr_ls.push(lmr2);
-
-    //     // let mut lmr1_e = Arc::clone(&lmr1);
-    //     // let mut lmr2_e = Arc::clone(&lmr2);
-    //     let rmr1 = Arc::clone(&rmr1_o);
-    //     let rmr2 = Arc::clone(&rmr2_o);
-
-    //     {
-    //         let lmr1_er = lmr_ls[0].read();
-    //         let slice = lmr1_er.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //         let lmr2_er = lmr_ls[1].read();
-    //         let slice = lmr2_er.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //     }
-
-    //     let rdma_arc = Arc::new(rdma);
-    //     let rdma1 = Arc::clone(&rdma_arc);
-    //     let rdma2 = Arc::clone(&rdma_arc);
-        
-    //     let mut lmr1_n = Arc::clone(&lmr_ls[0]);
-    //     let mut lmr2_n = Arc::clone(&lmr_ls[1]);
-    //     let jh1 = tokio::spawn(async move {
-    //         // let lmr_w = lmr1.write().unwrap();
-    //         // let lmr = binding.deref_mut();
-    //         rdma1.read(lmr1_n.write().deref_mut(), rmr1.as_ref()).await;
-    //         let lmr_r = lmr1_n.read();
-    //         let slice = lmr_r.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //         // drop(slice);
-    //     });
-    //     let jh2 = tokio::spawn(async move {
-    //         // let lmr_w = lmr2.write().unwrap();
-    //         // let lmr = binding.deref_mut();
-    //         rdma2.read(lmr2_n.write().deref_mut(), rmr2.as_ref()).await;
-    //         let lmr_r = lmr2_n.read();
-    //         let slice = lmr_r.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //         // drop(slice);
-    //     });
-    //     let start_time = Instant::now();
-    //     // rdma.read(&mut lmr1, &rmr1).await;
-    //     // rdma.read(&mut lmr2, &rmr2).await;
-    //     jh1.await;
-    //     jh2.await;
-    //     {
-    //         let lmr1_er = lmr_ls[0].read();
-    //         let slice = lmr1_er.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //         let lmr2_er = lmr_ls[1].read();
-    //         let slice = lmr2_er.as_slice();
-    //         println!("First {:?} Last {:?} Size {}", slice.get(0), slice.get(slice.len() - 1), slice.len());
-    //     }
-    //     let end_time = Instant::now();
-    //     let elapsed_time = end_time - start_time;
-
-    //     let elapsed_seconds = elapsed_time.as_secs();
-    //     println!("Elapsed time: {} seconds", elapsed_seconds);
-    //     println!("Average Elapsed time: {} seconds", elapsed_seconds as f64/2.0);
-
-    //     let elapsed_nanoseconds = elapsed_time.as_nanos();
-    //     println!("Elapsed time: {} nanoseconds", elapsed_nanoseconds);
-    //     println!("Average Elapsed time: {} nanoseconds", elapsed_nanoseconds as f64/2.0);
-    // } else {
-    //     tokio::time::sleep(Duration::new(5, 0)).await;
-    // }
-    //TODO: add sync
-    
-
-    // // both client and server has acces to their local_mrs after this
-    // return_mrs(&rdma, &mut local_mrs, &mut remote_mrs, req_num, iamserver).await.unwrap();
-    // println!("local_mrs num: {}", local_mrs.len());
-    // println!("remote_mrs num: {}", remote_mrs.len());
-
-    // print_mrs(&rdma, &local_mrs, req_num).await.unwrap();
-
-    // }
     if iamserver {
         println!("Server done!");
     } else {
