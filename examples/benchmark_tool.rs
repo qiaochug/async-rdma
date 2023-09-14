@@ -1,8 +1,6 @@
-// #![feature(get_mut_unchecked)]
 use async_rdma::{
     LocalMr, RemoteMr,
     LocalMrReadAccess, LocalMrWriteAccess,
-    // RemoteMrReadAccess, RemoteMRWriteAccess,
     Rdma, RdmaBuilder};
 use clippy_utilities::Cast;
 use std::{alloc::Layout, 
@@ -77,12 +75,23 @@ async fn print_mrs_wrapped(rdma: &Rdma, local_mrs: &Vec<Arc<RwLock<LocalMr>>>) -
 }
 
 async fn execute_request(rdma: Arc<Rdma>, index: usize, op: usize, lmr: Arc<RwLock<LocalMr>>, rmr: Arc<RwLock<RemoteMr>>) -> io::Result<op_ret> {
-    let start_t = Instant::now();    
-    if op == 1 {
-        rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
-    } else {
-        rdma.write(lmr.read().deref(), rmr.write().deref_mut()).await;
-    }
+    let start_t = Instant::now();  
+    loop {
+        if op == 1 {
+            let ret = rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
+            match ret {
+                Ok(_) => {break;},
+                Err(error) => (),
+            }; //library bug? lmr permenantly locked on ENOMEM. Incorrect errno as well. Loop here is not useful for now with the bug
+        } else {
+            let ret = rdma.write(lmr.read().deref(), rmr.write().deref_mut()).await;
+            match ret {
+                Ok(_) => {break;},
+                Err(error) => (),
+            };
+        }
+    }  
+    
     let end_t = Instant::now();
 
     let result = op_ret {
@@ -280,7 +289,7 @@ async fn main_async(cfg: config) {
     // Prepare QPs
     let rdma_builder = RdmaBuilder::default()
                         .set_dev("mlx5_0")
-                        .set_qp_max_recv_wr(qp_size as u32)
+                        .set_qp_max_send_wr(qp_size as u32)
                         .set_imm_flag_in_wc(2)
                         .unwrap();
     let mut rdmas = Vec::with_capacity(qp_num);
@@ -319,7 +328,7 @@ async fn main_async(cfg: config) {
         println!("Client up!");
     }
 
-    let EXPERIMENT_REPEATS = 3;
+    let EXPERIMENT_REPEATS = 10;
     let mut avg_lat = Vec::with_capacity(EXPERIMENT_REPEATS);
     let mut avg_thr = Vec::with_capacity(EXPERIMENT_REPEATS);
     let mut lat_std = Vec::with_capacity(EXPERIMENT_REPEATS);
