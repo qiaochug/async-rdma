@@ -7,7 +7,8 @@ use std::{alloc::Layout,
     env, io::{self, Write}, 
     process::exit, time::{Instant, Duration},
     sync::{Arc},
-    ops::{DerefMut, Deref}};
+    ops::{DerefMut, Deref},
+    thread};
 use rand::Rng;
 use chrono::Local;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -179,14 +180,18 @@ async fn run_experiment(
         let op = operation_list[i];
         let lmr = Arc::clone(&local_mrs[i]);
         let rmr = Arc::clone(&remote_mrs[i]);
-        let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
+        // let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
+        let jh = thread::spawn(move || {
+            tokio::runtime::Runtime::new().unwrap().block_on(execute_request(rdma_qp, i, op, lmr, rmr))
+        });
         jhs.push(jh);
     }
 
     let mut results = Vec::with_capacity(req_num);
     for i in 0..req_num {
         let jh = jhs.remove(0);
-        results.push(jh.await.unwrap().unwrap());
+        // results.push(jh.await.unwrap().unwrap());
+        results.push(jh.join().unwrap().unwrap());
     }
 
     // Result analysis
