@@ -10,7 +10,7 @@ use std::{alloc::Layout,
     ops::{DerefMut, Deref}};
 use rand::Rng;
 use chrono::Local;
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::io::prelude::*;
 use std::fs::File;
 
@@ -65,7 +65,7 @@ async fn return_mrs(rdma: &Rdma, local_mrs: &mut Vec<Arc<RwLock<LocalMr>>>, remo
 async fn print_mrs_wrapped(rdma: &Rdma, local_mrs: &Vec<Arc<RwLock<LocalMr>>>) -> io::Result<()>{
 
     for i in 0..local_mrs.len() {
-        let mr_r = local_mrs[i].read();
+        let mr_r = local_mrs[i].read().await;
         let slice = mr_r.as_slice();
         println!("Index {} First {:?} Last {:?} Size {}", i, slice.get(0), slice.get(slice.len() - 1), slice.len());
     }
@@ -78,13 +78,15 @@ async fn execute_request(rdma: Arc<Rdma>, index: usize, op: usize, lmr: Arc<RwLo
     let start_t = Instant::now();  
     loop {
         if op == 1 {
-            let ret = rdma.read(lmr.write().deref_mut(), rmr.read().deref()).await;
+            // let lmr_lock = lmr.write().await;
+            // let rmr_lock = rmr.read().await;
+            let ret = rdma.read(lmr.write().await.deref_mut(), rmr.read().await.deref()).await;
             match ret {
                 Ok(_) => {break;},
                 Err(error) => (),
             }; //library bug? lmr permenantly locked on ENOMEM. Incorrect errno as well. Loop here is not useful for now with the bug
         } else {
-            let ret = rdma.write(lmr.read().deref(), rmr.write().deref_mut()).await;
+            let ret = rdma.write(lmr.read().await.deref(), rmr.write().await.deref_mut()).await;
             match ret {
                 Ok(_) => {break;},
                 Err(error) => (),
