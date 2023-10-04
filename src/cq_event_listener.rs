@@ -7,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use clippy_utilities::Cast;
 use getset::Getters;
-use std::{collections::HashMap, io, os::unix::prelude::RawFd, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, os::unix::prelude::RawFd, sync::Arc, time::Duration}; //time::{Duration, Instant}
 use tokio::{
     io::unix::AsyncFd,
     // Using mpsc here bacause the `oneshot` Sender needs its own ownership when it performs a `send`.
@@ -34,7 +34,7 @@ pub(crate) type LmrGuards = Vec<ArcRwLockGuard>;
 type ReqMap = Arc<parking_lot::Mutex<HashMap<WorkRequestId, (Responder, LmrInners, LmrGuards)>>>;
 
 /// The default timeout value for event listener to wait for the CC's notification.
-pub(crate) static DEFAULT_CC_EVENT_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) static DEFAULT_CC_EVENT_TIMEOUT: Duration = Duration::from_nanos(10);
 
 /// Time to wait for being canceled.
 /// Only used in `cancel_safety` test.
@@ -142,6 +142,7 @@ impl CQEventListener {
                     },
                 )?;
 
+                // let t1 = Instant::now();
                 loop {
                     match cq.poll_cq_multiple(&mut wc_buf) {
                         Ok(_) => {
@@ -173,6 +174,11 @@ impl CQEventListener {
                         }
                     }
                 }
+
+                // let t2 = Instant::now();
+                // println!("Before polling is {:?}, after is {:?}", t1, t2);
+                // println!("Polling took {:?}", (t2 - t1).as_nanos());
+                
                 cq.req_notify(false).map_err(|e| {
                     error!(
                         "Failed to request a notification on next cq arrival, {:?}",

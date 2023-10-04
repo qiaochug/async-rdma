@@ -32,7 +32,7 @@ use std::{
     sync::Arc,
     task::Poll,
     time::Duration,
-};
+};//Instant, 
 use tokio::{
     sync::mpsc,
     time::{sleep, Sleep},
@@ -1024,18 +1024,32 @@ impl QueuePair {
         LR: LocalMrReadAccess,
         RW: RemoteMrWriteAccess,
     {
+        // let t1 = Instant::now();
+
         let (wr_id, mut resp_rx) = self
             .cq_event_listener
             .register_for_read(&get_lmr_inners(lms))?;
+
+        // let t2 = Instant::now();
+
         let len: usize = lms.iter().map(|lm| lm.length()).sum();
         self.submit_write(lms, rm, wr_id, imm)?;
-        resp_rx
+
+        // let t3 = Instant::now();
+        let result = resp_rx
             .recv()
             .await
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "agent is dropped"))?
             .result()
             .map(|sz| debug!("post size: {sz}, mr len: {len}"))
-            .map_err(Into::into)
+            .map_err(Into::into);
+        
+        // let t4 = Instant::now();
+
+        // println!("t3 is {:?} t4 is {:?}", t3, t4);
+        // println!("Duration is {:?} {:?} {:?}", (t2 - t1).as_nanos(), (t3 - t2).as_nanos(), (t4 - t3).as_nanos());
+
+        result
     }
 
     /// A 64 bits value in a remote mr being read, compared with `old_value` and if they are equal,

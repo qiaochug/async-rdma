@@ -11,7 +11,7 @@ use num_traits::FromPrimitive;
 use rdma_sys::{
     ibv_cq, ibv_create_cq, ibv_destroy_cq, ibv_poll_cq, ibv_req_notify_cq, ibv_wc, ibv_wc_status,
 };
-use std::{fmt::Debug, io, mem, ptr::NonNull};
+use std::{fmt::Debug, io, mem, ptr::NonNull}; //, time::Instant
 use thiserror::Error;
 use tracing::error;
 
@@ -119,8 +119,15 @@ impl CompletionQueue {
         }
         // SAFETY: ffi
         // TODO: check safety
+
+        // let t1 = Instant::now();
+
         let cqe_num =
             unsafe { ibv_poll_cq(self.as_ptr(), self.max_poll_cqe, wc_buf.as_mut_ptr().cast()) };
+
+        // let t2 = Instant::now();
+        // println!("ibv_poll_cq took {:?} {:?}", (t2 - t1).as_nanos(), cqe_num);
+
         if cqe_num > 0_i32 {
             // this buffer will be used by RDMA NIC and it's len will not increase when NIC push data into it,
             // so we need set it's len manually.

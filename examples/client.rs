@@ -15,6 +15,7 @@ use std::{
     env,
     io::{self, Write},
     process::exit,
+    time::{Instant, Duration}
 };
 
 /// send data to serer
@@ -74,8 +75,14 @@ async fn request_then_write(rdma: &Rdma) -> io::Result<()> {
     // write data into lmr
     let _num = lmr.as_mut_slice().write(&[1_u8; 8])?;
     // write the second half of the data in lmr to the rmr
+
+    let start_t = Instant::now();
     rdma.write(&lmr.get(4..8).unwrap(), &mut rmr.get_mut(4..8).unwrap())
         .await?;
+    let end_t = Instant::now();
+    let du = (end_t - start_t).as_nanos() as f64;
+    println!("Duration is {:?} ns", du);
+
     // send rmr's meta data to the remote end
     rdma.send_remote_mr(rmr).await?;
     Ok(())
