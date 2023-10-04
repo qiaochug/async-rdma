@@ -181,9 +181,10 @@ async fn run_experiment(
         let lmr = Arc::clone(&local_mrs[i]);
         let rmr = Arc::clone(&remote_mrs[i]);
         // let jh = tokio::spawn(execute_request(rdma_qp, i, op, lmr, rmr));
-        let jh = thread::spawn(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(execute_request(rdma_qp, i, op, lmr, rmr))
-        });
+        // let jh = thread::spawn(move || {
+        //     tokio::runtime::Runtime::new().unwrap().block_on(execute_request(rdma_qp, i, op, lmr, rmr))
+        // });
+        let jh = tokio::task::spawn_blocking(move || {execute_request(rdma_qp, i, op, lmr, rmr)});
         jhs.push(jh);
     }
 
@@ -191,7 +192,8 @@ async fn run_experiment(
     for i in 0..req_num {
         let jh = jhs.remove(0);
         // results.push(jh.await.unwrap().unwrap());
-        results.push(jh.join().unwrap().unwrap());
+        // results.push(jh.join().unwrap().unwrap());
+        results.push(jh.await.unwrap().await.unwrap());
     }
 
     // Result analysis
