@@ -34,7 +34,7 @@ pub(crate) type LmrGuards = Vec<ArcRwLockGuard>;
 type ReqMap = Arc<parking_lot::Mutex<HashMap<WorkRequestId, (Responder, LmrInners, LmrGuards)>>>;
 
 /// The default timeout value for event listener to wait for the CC's notification.
-pub(crate) static DEFAULT_CC_EVENT_TIMEOUT: Duration = Duration::from_nanos(10);
+pub(crate) static DEFAULT_CC_EVENT_TIMEOUT: Duration = Duration::from_nanos(10000);
 
 /// Time to wait for being canceled.
 /// Only used in `cancel_safety` test.
